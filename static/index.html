@@ -579,8 +579,19 @@ $('btn-play').addEventListener('click', () => {
     stopPlay();
     return;
   }
-  const text = $('summary-view').textContent.trim();
-  if (!text || text === '生成中...') { showError('請先生成摘要'); return; }
+
+  // 根據當前 tab 決定播放內容
+  let text = '';
+  if ($('qa-view').style.display !== 'none') {
+    // 問答頁面：播放最後一條 AI 回覆
+    const aiMsgs = document.querySelectorAll('#qa-messages .qa-ai');
+    const last = aiMsgs[aiMsgs.length - 1];
+    text = last ? last.textContent.trim() : '';
+    if (!text || text === '思考中...') { showError('沒有可播放的 AI 回覆'); return; }
+  } else {
+    text = $('summary-view').textContent.trim();
+    if (!text || text === '生成中...') { showError('請先生成摘要'); return; }
+  }
 
   // 清除 markdown 符號
   const clean = text.replace(/[#*_>`]/g, '').replace(/\n{2,}/g, '\n\n');
