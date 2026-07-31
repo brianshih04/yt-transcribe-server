@@ -9,6 +9,7 @@ GET  /health
 
 import os
 import re
+import json
 import uuid
 import shutil
 import tempfile
@@ -57,6 +58,72 @@ class TranscribeRequest(BaseModel):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.post("/captions/{video_id}")
+async def get_captions(video_id: str, lang: Optional[str] = None):
+    """透過 Innertube ANDROID API 取得 YouTube 字幕。"""
+    logger.info("Captions request: %s", video_id)
+
+    # Step 1: Innertube player API (ANDROID client)
+    try:
+        resp = requests.post(
+            "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
+            json={
+                "context": {"client": {
+                    "clientName": "ANDROID",
+                    "clientVersion": "20.10.38",
+                    "androidSdkVersion": 30,
+                }},
+                "videoId": video_id,
+            },
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "com.google.android.youtube/20.10.38",
+            },
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            raise HTTPException(502, f"Innertube HTTP {resp.status_code}")
+        data = resp.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"Innertube error: {e}")
+
+    tracks = (data.get("captions") or {}).get("playerCaptionsTracklistRenderer", {}).get("captionTracks", [])
+    if not tracks:
+        raise HTTPException(404, "No caption tracks")
+
+    # 選字幕軌
+    target = tracks[0]
+    if lang:
+        for t in tracks:
+            if t.get("languageCode", "").startswith(lang):
+                target = t
+                break
+
+    base_url = target["baseUrl"].replace("\\u0026", "&")
+    logger.info("Track: %s, URL: %s...", target.get("languageCode"), base_url[:80])
+
+    # Step 2: fetch timedtext
+    for fmt in ["srv3", "json3", ""]:
+        url = f"{base_url}&fmt={fmt}" if fmt else base_url
+        try:
+            r = requests.get(url, headers={
+                "User-Agent": "com.google.android.youtube/20.10.38",
+            }, timeout=15)
+            logger.info("fmt=%s: HTTP %d, len=%d", fmt or "none", r.status_code, len(r.text))
+            if r.text.strip():
+                segments = _parse_timedtext(r.text, fmt)
+                if segments:
+                    logger.info("Captions OK: %d segments", len(segments))
+                    return {"segments": segments, "language": target.get("languageCode", "unknown")}
+        except Exception as e:
+            logger.warning("fmt=%s error: %s", fmt or "none", e)
+            continue
+
+    raise HTTPException(502, "All timedtext formats returned empty")
 
 
 @app.post("/transcribe")
@@ -199,6 +266,58 @@ def _run_job(job_id: str, url: str, video_id: str, language: Optional[str]):
         _update_job(job_id, status="failed", message=str(e))
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def _parse_timedtext(text: str, fmt: str = "") -> list:
+    """解析 YouTube timedtext（XML 或 json3）。"""
+    import re as _re
+
+    segments = []
+
+    # JSON (json3)
+    if text.strip().startswith("{"):
+        try:
+            data = json.loads(text)
+            for ev in data.get("events", []):
+                if not ev.get("segs"):
+                    continue
+                t = "".join(s.get("utf8", "") for s in ev["segs"]).strip()
+                if t:
+                    segments.append({
+                        "start": round(ev.get("tStartMs", 0) / 1000, 2),
+                        "dur": round(ev.get("dDurationMs", 0) / 1000, 2),
+                        "text": t,
+                    })
+        except Exception:
+            pass
+        return segments
+
+    # XML — srv3 用 <p>, srv1/預設用 <text>
+    for tag in ["text", "p"]:
+        for m in _re.finditer(rf'<{tag}\s+([^>]*)>([\s\S]*?)</{tag}>', text):
+            attrs = m.group(1)
+            raw = m.group(2)
+            # srv3: t="33" d="2533"（毫秒）; srv1: start="0.5" dur="2.0"（秒）
+            sm = _re.search(r'(?:t|start)="([\d.]+)"', attrs)
+            dm = _re.search(r'(?:d|dur)="([\d.]+)"', attrs)
+            start_raw = float(sm.group(1)) if sm else 0
+            dur_raw = float(dm.group(1)) if dm else 0
+            # srv3 的 t/d 是毫秒
+            if tag == "p":
+                start = round(start_raw / 1000, 2)
+                dur = round(dur_raw / 1000, 2)
+            else:
+                start = round(start_raw, 2)
+                dur = round(dur_raw, 2)
+            # decode entities
+            clean = (raw.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+                       .replace("&#39;", "'").replace("&quot;", '"').replace("&apos;", "'").strip())
+            if clean:
+                segments.append({"start": start, "dur": dur, "text": clean})
+        if segments:
+            break
+
+    return segments
 
 
 def _moss_transcribe(audio_path: str, language: Optional[str] = None):
