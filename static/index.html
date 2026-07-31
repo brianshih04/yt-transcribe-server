@@ -186,6 +186,7 @@
   </div>
   <div class="export-row">
     <button class="btn btn-secondary" id="btn-summary">⚡ 生成 AI 摘要</button>
+    <button class="btn btn-secondary" id="btn-play">🔊 播放</button>
     <button class="btn btn-secondary" id="btn-srt">匯出 SRT</button>
     <button class="btn btn-secondary" id="btn-vtt">匯出 VTT</button>
   </div>
@@ -408,6 +409,42 @@ async function callLLM(provider, apiKey, model, baseUrl, prompt) {
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const data = await resp.json();
   return data.choices?.[0]?.message?.content || '空回應';
+}
+
+// ── 語音播放摘要 ────────────────────────
+let utter = null;
+let playing = false;
+
+$('btn-play').addEventListener('click', () => {
+  if (playing) {
+    speechSynthesis.cancel();
+    stopPlay();
+    return;
+  }
+  const text = $('summary-view').textContent.trim();
+  if (!text || text === '生成中...') { showError('請先生成摘要'); return; }
+
+  // 清除 markdown 符號
+  const clean = text.replace(/[#*_>`]/g, '').replace(/\n{2,}/g, '\n\n');
+  utter = new SpeechSynthesisUtterance(clean);
+  utter.lang = 'zh-TW';
+  utter.rate = 1.1;
+
+  // 嘗試找中文語音
+  const voices = speechSynthesis.getVoices();
+  const zh = voices.find(v => v.lang.startsWith('zh'));
+  if (zh) utter.voice = zh;
+
+  utter.onend = stopPlay;
+  utter.onerror = stopPlay;
+  speechSynthesis.speak(utter);
+  playing = true;
+  $('btn-play').textContent = '⏸ 停止';
+});
+
+function stopPlay() {
+  playing = false;
+  $('btn-play').textContent = '🔊 播放';
 }
 
 // ── 匯出 SRT/VTT ────────────────────────
