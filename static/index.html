@@ -354,26 +354,63 @@ async function generateSummary() {
   const provider = $('provider').value;
   const model = $('model').value || getDefaultModel(provider);
   const baseUrl = $('baseurl').value.trim() || getDefaultBaseUrl(provider);
-  const text = transcript.map(s => `[${formatTime(s.start)}] ${s.text}`).join('\n');
+  const fullText = transcript.map(s => `[${formatTime(s.start)}] ${s.text}`).join('\n');
 
-  const prompt = `以下是 YouTube 影片的逐字稿，請生成繁體中文摘要：
+  // 分段處理（每段約 2000 字）
+  const chunks = chunkText(fullText, 2000);
+
+  const promptHeader = `以下是 YouTube 影片的逐字稿，請生成繁體中文摘要：
 
 1. 一句話總結
 2. 5 個重點（含近似時間戳）
 3. 章節分段（含時間範圍）
 
-逐字稿：
-${text}`;
+`;
 
   try {
-    const result = await callLLM(provider, apiKey, model, baseUrl, prompt);
-    $('summary-view').textContent = result;
+    if (chunks.length <= 1) {
+      // 短逐字稿，一次處理
+      const result = await callLLM(provider, apiKey, model, baseUrl, promptHeader + fullText);
+      $('summary-view').textContent = result;
+    } else {
+      // 長逐字稿，分段摘要再彙整
+      $('summary-view').textContent = `分段摘要中（共 ${chunks.length} 段）...\n\n`;
+
+      const partials = [];
+      for (let i = 0; i < chunks.length; i++) {
+        const p = `這是影片逐字稿的第 ${i+1}/${chunks.length} 部分，請用繁體中文摘要這段的要點（含時間戳）：\n\n${chunks[i]}`;
+        const r = await callLLM(provider, apiKey, model, baseUrl, p);
+        partials.push(r);
+        $('summary-view').textContent = `分段摘要中（共 ${chunks.length} 段）... 已完成 ${i+1}/${chunks.length}\n\n`;
+      }
+
+      // 彙整
+      const mergePrompt = `${promptHeader}以下是影片各段落的摘要，請彙整成完整的摘要（一句話總結、5個重點含時間戳、章節分段）：\n\n${partials.join('\n\n---\n\n')}`;
+      const final = await callLLM(provider, apiKey, model, baseUrl, mergePrompt);
+      $('summary-view').textContent = final;
+    }
   } catch (err) {
     $('summary-view').textContent = '';
     showError('摘要生成失敗：' + err.message);
   } finally {
     $('btn-summary').disabled = false;
   }
+}
+
+function chunkText(text, maxLen) {
+  const lines = text.split('\n');
+  const chunks = [];
+  let cur = '';
+  for (const line of lines) {
+    if ((cur + line).length > maxLen) {
+      if (cur) chunks.push(cur);
+      cur = line + '\n';
+    } else {
+      cur += line + '\n';
+    }
+  }
+  if (cur) chunks.push(cur);
+  return chunks;
 }
 
 function getDefaultModel(provider) {
@@ -391,9 +428,14 @@ async function callLLM(provider, apiKey, model, baseUrl, prompt) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
     });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    if (!resp.ok) {
+      const err = await resp.text();
+      throw new Error(`HTTP ${resp.status}: ${err.substring(0, 200)}`);
+    }
     const data = await resp.json();
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || '空回應';
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) throw new Error('API 回傳空內容');
+    return text;
   }
 
   // OpenAI compatible (deepseek, openai, custom)
@@ -406,9 +448,14 @@ async function callLLM(provider, apiKey, model, baseUrl, prompt) {
       max_tokens: 4096,
     }),
   });
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  if (!resp.ok) {
+    const err = await resp.text();
+    throw new Error(`HTTP ${resp.status}: ${err.substring(0, 200)}`);
+  }
   const data = await resp.json();
-  return data.choices?.[0]?.message?.content || '空回應';
+  const text = data.choices?.[0]?.message?.content;
+  if (!text) throw new Error('API 回傳空內容（model=' + model + ', finish_reason=' + (data.choices?.[0]?.finish_reason || '?') + '）');
+  return text;
 }
 
 // ── 語音播放摘要 ────────────────────────
