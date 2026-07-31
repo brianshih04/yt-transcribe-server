@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YouTube AI SRT</title>
+  <style>
+    :root {
+      --bg: #0f0f0f;
+      --surface: #1a1a1a;
+      --surface2: #252525;
+      --text: #f1f1f1;
+      --text-dim: #aaa;
+      --accent: #3ea6ff;
+      --accent-hover: #65b8ff;
+      --border: #303030;
+      --error: #ff4444;
+      --success: #44ff88;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, 'Roboto', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 16px;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    h1 { font-size: 1.4rem; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+    h1 .logo { color: var(--accent); }
+    .card {
+      background: var(--surface);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 12px;
+    }
+    .input-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    input[type="text"], select, textarea {
+      flex: 1;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 14px;
+      outline: none;
+    }
+    input:focus, select:focus { border-color: var(--accent); }
+    .btn {
+      background: var(--accent);
+      color: #000;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .btn:hover { background: var(--accent-hover); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-secondary {
+      background: var(--surface2);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover { background: var(--border); }
+    .status {
+      text-align: center;
+      color: var(--text-dim);
+      padding: 8px;
+      font-size: 14px;
+    }
+    .error {
+      background: rgba(255,68,68,0.1);
+      color: var(--error);
+      padding: 12px;
+      border-radius: 8px;
+      margin-bottom: 8px;
+      font-size: 14px;
+    }
+    .tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 12px;
+    }
+    .tab {
+      padding: 8px 16px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      color: var(--text-dim);
+      border: none;
+      background: none;
+    }
+    .tab.active { background: var(--surface2); color: var(--text); }
+    .transcript {
+      max-height: 60vh;
+      overflow-y: auto;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .transcript .seg { padding: 4px 0; border-bottom: 1px solid var(--border); }
+    .transcript .seg .time { color: var(--accent); cursor: pointer; font-size: 12px; margin-right: 8px; }
+    .summary { font-size: 14px; line-height: 1.8; white-space: pre-wrap; }
+    .settings-toggle {
+      font-size: 13px;
+      color: var(--text-dim);
+      cursor: pointer;
+      text-align: center;
+      padding: 8px;
+    }
+    .settings-panel { display: none; }
+    .settings-panel.open { display: block; }
+    label { font-size: 13px; color: var(--text-dim); display: block; margin-bottom: 4px; margin-top: 8px; }
+    .progress-bar {
+      width: 100%;
+      height: 4px;
+      background: var(--surface2);
+      border-radius: 2px;
+      overflow: hidden;
+      margin-top: 8px;
+    }
+    .progress-fill {
+      height: 100%;
+      background: var(--accent);
+      transition: width 0.3s;
+      width: 0%;
+    }
+    .export-row { display: flex; gap: 8px; margin-top: 8px; }
+    @media (max-width: 600px) {
+      .input-row { flex-direction: column; }
+      .btn { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+
+<h1><span class="logo">▶</span> YouTube AI SRT</h1>
+
+<!-- URL 輸入 -->
+<div class="card">
+  <div class="input-row">
+    <input type="text" id="url-input" placeholder="貼上 YouTube URL..." />
+    <button class="btn" id="btn-fetch">抓字幕</button>
+  </div>
+  <div class="settings-toggle" id="settings-toggle">⚙ 設定</div>
+  <div class="settings-panel" id="settings-panel">
+    <label>LLM Provider</label>
+    <select id="provider">
+      <option value="deepseek">DeepSeek</option>
+      <option value="openai">OpenAI</option>
+      <option value="gemini">Gemini</option>
+      <option value="custom">Custom (OpenAI compatible)</option>
+    </select>
+    <label>API Key</label>
+    <input type="text" id="apikey" placeholder="sk-..." />
+    <label>Model</label>
+    <input type="text" id="model" placeholder="deepseek-chat" />
+    <label>Base URL（可選覆寫）</label>
+    <input type="text" id="baseurl" placeholder="https://api.deepseek.com" />
+    <label>ASR Server</label>
+    <input type="text" id="asrurl" value="https://yt-transcribe.avision-gb10.org" />
+  </div>
+</div>
+
+<!-- 狀態 -->
+<div class="status" id="status"></div>
+<div class="progress-bar" id="progress-bar" style="display:none;"><div class="progress-fill" id="progress-fill"></div></div>
+<div id="error-box"></div>
+
+<!-- 結果 -->
+<div id="result-area" style="display:none;">
+  <div class="tabs">
+    <button class="tab active" id="tab-transcript">逐字稿</button>
+    <button class="tab" id="tab-summary">摘要</button>
+  </div>
+  <div class="card">
+    <div class="transcript" id="transcript-view"></div>
+    <div class="summary" id="summary-view" style="display:none;"></div>
+  </div>
+  <div class="export-row">
+    <button class="btn btn-secondary" id="btn-summary">⚡ 生成 AI 摘要</button>
+    <button class="btn btn-secondary" id="btn-srt">匯出 SRT</button>
+    <button class="btn btn-secondary" id="btn-vtt">匯出 VTT</button>
+  </div>
+</div>
+
+<script>
+const API = window.location.origin;
+let transcript = [];
+let videoId = '';
+
+// ── 元素 ────────────────────────────────
+const $ = id => document.getElementById(id);
+
+// ── 載入/儲存設定 ────────────────────────
+function loadSettings() {
+  const s = JSON.parse(localStorage.getItem('yt-srt-settings') || '{}');
+  $('provider').value = s.provider || 'deepseek';
+  $('apikey').value = s.apiKey || '';
+  $('model').value = s.model || '';
+  $('baseurl').value = s.baseurl || '';
+  $('asrurl').value = s.asrUrl || API;
+}
+function saveSettings() {
+  localStorage.setItem('yt-srt-settings', JSON.stringify({
+    provider: $('provider').value,
+    apiKey: $('apikey').value,
+    model: $('model').value,
+    baseUrl: $('baseurl').value,
+    asrUrl: $('asrurl').value,
+  }));
+}
+
+// ── 設定面板 ────────────────────────────
+$('settings-toggle').addEventListener('click', () => {
+  $('settings-panel').classList.toggle('open');
+});
+$('settings-panel').addEventListener('change', saveSettings);
+$('settings-panel').addEventListener('input', saveSettings);
+
+// ── 抓字幕 ──────────────────────────────
+function extractVideoId(url) {
+  const m = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([\w-]+)/);
+  return m ? m[1] : null;
+}
+
+$('btn-fetch').addEventListener('click', async () => {
+  const url = $('url-input').value.trim();
+  if (!url) return;
+  videoId = extractVideoId(url);
+  if (!videoId) { showError('無法解析 YouTube URL'); return; }
+
+  $('error-box').innerHTML = '';
+  $('result-area').style.display = 'none';
+  showStatus('擷取字幕中...');
+  $('btn-fetch').disabled = true;
+
+  try {
+    // 先試字幕擷取
+    const asrUrl = $('asrurl').value || API;
+    const resp = await fetch(`${asrUrl}/captions/${videoId}`, { method: 'POST' });
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.segments && data.segments.length > 0) {
+        transcript = data.segments;
+        renderTranscript();
+        showResult();
+        return;
+      }
+    }
+    // 字幕失敗 → ASR
+    await transcribeViaASR(url);
+  } catch (err) {
+    // 嘗試 ASR fallback
+    try { await transcribeViaASR(url); }
+    catch (e2) { showError('字幕擷取失敗：' + err.message); }
+  } finally {
+    $('btn-fetch').disabled = false;
+    hideStatus();
+  }
+});
+
+// ── ASR 語音辨識 ────────────────────────
+async function transcribeViaASR(url) {
+  const asrUrl = $('asrurl').value || API;
+  showStatus('提交語音辨識請求...');
+  $('progress-bar').style.display = 'block';
+
+  const resp = await fetch(`${asrUrl}/transcribe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  });
+  if (!resp.ok) throw new Error('ASR 提交失敗');
+  const { job_id } = await resp.json();
+
+  // 輪詢
+  return new Promise((resolve, reject) => {
+    const poll = setInterval(async () => {
+      try {
+        const r = await fetch(`${asrUrl}/job/${job_id}`);
+        const data = await r.json();
+        if (data.status === 'done' && data.result) {
+          clearInterval(poll);
+          $('progress-bar').style.display = 'none';
+          transcript = data.result.segments;
+          renderTranscript();
+          showResult();
+          resolve();
+        } else if (data.status === 'failed') {
+          clearInterval(poll);
+          $('progress-bar').style.display = 'none';
+          reject(new Error(data.message || 'ASR 失敗'));
+        } else {
+          $('progress-fill').style.width = (data.progress || 0) + '%';
+          showStatus(data.message || '處理中...');
+        }
+      } catch (e) {}
+    }, 3000);
+  });
+}
+
+// ── 渲染逐字稿 ──────────────────────────
+function renderTranscript() {
+  const html = transcript.map((s, i) => {
+    const time = formatTime(s.start);
+    return `<div class="seg"><span class="time">${time}</span>${s.text}</div>`;
+  }).join('');
+  $('transcript-view').innerHTML = html;
+}
+
+function formatTime(sec) {
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function showResult() {
+  $('result-area').style.display = 'block';
+  hideStatus();
+}
+
+// ── Tab 切換 ────────────────────────────
+$('tab-transcript').addEventListener('click', () => switchTab('transcript'));
+$('tab-summary').addEventListener('click', () => switchTab('summary'));
+
+function switchTab(tab) {
+  $('tab-transcript').classList.toggle('active', tab === 'transcript');
+  $('tab-summary').classList.toggle('active', tab === 'summary');
+  $('transcript-view').style.display = tab === 'transcript' ? 'block' : 'none';
+  $('summary-view').style.display = tab === 'summary' ? 'block' : 'none';
+}
+
+// ── AI 摘要 ─────────────────────────────
+$('btn-summary').addEventListener('click', generateSummary);
+
+async function generateSummary() {
+  if (transcript.length === 0) return;
+  const apiKey = $('apikey').value.trim();
+  if (!apiKey) { showError('請在設定中輸入 API Key'); $('settings-panel').classList.add('open'); return; }
+
+  $('btn-summary').disabled = true;
+  switchTab('summary');
+  $('summary-view').textContent = '生成中...';
+
+  const provider = $('provider').value;
+  const model = $('model').value || getDefaultModel(provider);
+  const baseUrl = $('baseurl').value.trim() || getDefaultBaseUrl(provider);
+  const text = transcript.map(s => `[${formatTime(s.start)}] ${s.text}`).join('\n');
+
+  const prompt = `以下是 YouTube 影片的逐字稿，請生成繁體中文摘要：
+
+1. 一句話總結
+2. 5 個重點（含近似時間戳）
+3. 章節分段（含時間範圍）
+
+逐字稿：
+${text}`;
+
+  try {
+    const result = await callLLM(provider, apiKey, model, baseUrl, prompt);
+    $('summary-view').textContent = result;
+  } catch (err) {
+    $('summary-view').textContent = '';
+    showError('摘要生成失敗：' + err.message);
+  } finally {
+    $('btn-summary').disabled = false;
+  }
+}
+
+function getDefaultModel(provider) {
+  return { deepseek: 'deepseek-chat', openai: 'gpt-4o-mini', gemini: 'gemini-2.0-flash', custom: '' }[provider] || '';
+}
+
+function getDefaultBaseUrl(provider) {
+  return { deepseek: 'https://api.deepseek.com', openai: 'https://api.openai.com', gemini: 'https://generativelanguage.googleapis.com', custom: '' }[provider] || '';
+}
+
+async function callLLM(provider, apiKey, model, baseUrl, prompt) {
+  if (provider === 'gemini') {
+    const resp = await fetch(`${baseUrl}/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || '空回應';
+  }
+
+  // OpenAI compatible (deepseek, openai, custom)
+  const resp = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 4096,
+    }),
+  });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const data = await resp.json();
+  return data.choices?.[0]?.message?.content || '空回應';
+}
+
+// ── 匯出 SRT/VTT ────────────────────────
+$('btn-srt').addEventListener('click', () => exportFile('srt'));
+$('btn-vtt').addEventListener('click', () => exportFile('vtt'));
+
+function exportFile(format) {
+  if (transcript.length === 0) return;
+  let content = '';
+  transcript.forEach((s, i) => {
+    if (format === 'srt') content += `${i + 1}\n`;
+    content += `${srtTime(s.start, format)} --> ${srtTime(s.start + s.dur, format)}\n${s.text}\n\n`;
+  });
+  const blob = new Blob([content], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${videoId}.${format}`;
+  a.click();
+}
+
+function srtTime(sec, format) {
+  const ms = Math.round((sec % 1) * 1000);
+  const s = Math.floor(sec) % 60;
+  const m = Math.floor(sec / 60) % 60;
+  const h = Math.floor(sec / 3600);
+  const sep = format === 'vtt' ? '.' : ',';
+  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}${sep}${ms.toString().padStart(3, '0')}`;
+}
+
+// ── 工具 ────────────────────────────────
+function showStatus(msg) { $('status').textContent = msg; }
+function hideStatus() { $('status').textContent = ''; }
+function showError(msg) { $('error-box').innerHTML = `<div class="error">${msg}</div>`; }
+
+// ── Enter 鍵 ────────────────────────────
+$('url-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') $('btn-fetch').click();
+});
+
+// 載入設定
+loadSettings();
+</script>
+</body>
+</html>

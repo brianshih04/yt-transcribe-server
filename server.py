@@ -22,7 +22,8 @@ from typing import Optional
 import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 # ── 配置 ──────────────────────────────────────────────
@@ -58,6 +59,11 @@ class TranscribeRequest(BaseModel):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/")
+async def index():
+    return FileResponse(os.path.join(os.path.dirname(__file__), "static", "index.html"))
 
 
 @app.post("/captions/{video_id}")
