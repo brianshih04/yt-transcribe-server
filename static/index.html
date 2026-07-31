@@ -572,8 +572,25 @@ async function callLLM(provider, apiKey, model, baseUrl, prompt) {
 // ── 語音播放摘要 ────────────────────────
 let utter = null;
 let playing = false;
+let voicesLoaded = false;
+
+// iOS 需要提前載入語音清單
+function initVoices() {
+  if (typeof speechSynthesis === 'undefined') return;
+  const v = speechSynthesis.getVoices();
+  if (v.length > 0) { voicesLoaded = true; }
+}
+initVoices();
+if (typeof speechSynthesis !== 'undefined') {
+  speechSynthesis.onvoiceschanged = () => { initVoices(); };
+}
 
 $('btn-play').addEventListener('click', () => {
+  if (typeof speechSynthesis === 'undefined') {
+    showError('此瀏覽器不支援語音播放');
+    return;
+  }
+
   if (playing) {
     speechSynthesis.cancel();
     stopPlay();
@@ -583,7 +600,6 @@ $('btn-play').addEventListener('click', () => {
   // 根據當前 tab 決定播放內容
   let text = '';
   if ($('qa-view').style.display !== 'none') {
-    // 問答頁面：播放最後一條 AI 回覆
     const aiMsgs = document.querySelectorAll('#qa-messages .qa-ai');
     const last = aiMsgs[aiMsgs.length - 1];
     text = last ? last.textContent.trim() : '';
@@ -595,20 +611,30 @@ $('btn-play').addEventListener('click', () => {
 
   // 清除 markdown 符號
   const clean = text.replace(/[#*_>`]/g, '').replace(/\n{2,}/g, '\n\n');
-  utter = new SpeechSynthesisUtterance(clean);
-  utter.lang = 'zh-TW';
-  utter.rate = 1.1;
 
-  // 嘗試找中文語音
-  const voices = speechSynthesis.getVoices();
-  const zh = voices.find(v => v.lang.startsWith('zh'));
-  if (zh) utter.voice = zh;
+  // iOS 修復：先 cancel 再 speak
+  speechSynthesis.cancel();
 
-  utter.onend = stopPlay;
-  utter.onerror = stopPlay;
-  speechSynthesis.speak(utter);
-  playing = true;
-  $('btn-play').textContent = '⏸ 停止';
+  // 短延遲確保 cancel 完成（iOS 需要）
+  setTimeout(() => {
+    utter = new SpeechSynthesisUtterance(clean);
+    utter.lang = 'zh-TW';
+    utter.rate = 1.0;
+    utter.pitch = 1.0;
+    utter.volume = 1.0;
+
+    // 嘗試找中文語音
+    const voices = speechSynthesis.getVoices();
+    const zh = voices.find(v => v.lang.startsWith('zh-TW'))
+      || voices.find(v => v.lang.startsWith('zh'));
+    if (zh) utter.voice = zh;
+
+    utter.onend = stopPlay;
+    utter.onerror = stopPlay;
+    speechSynthesis.speak(utter);
+    playing = true;
+    $('btn-play').textContent = '⏸ 停止';
+  }, 150);
 });
 
 function stopPlay() {
