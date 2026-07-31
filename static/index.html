@@ -112,6 +112,8 @@
     .qa-msg { padding: 10px 14px; border-radius: 10px; margin-bottom: 8px; font-size: 14px; line-height: 1.6; white-space: pre-wrap; }
     .qa-user { background: var(--accent); color: #000; margin-left: 40px; }
     .qa-ai { background: var(--surface2); color: var(--text); margin-right: 40px; }
+    @keyframes pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+    .qa-thinking { animation: pulse 1.2s ease-in-out infinite; }
     .settings-toggle {
       font-size: 13px;
       color: var(--text-dim);
@@ -378,6 +380,10 @@ async function askQuestion() {
   $('qa-input').value = '';
   $('btn-ask').disabled = true;
 
+  // 顯示等待訊息
+  const aiDiv = appendQA('assistant', '思考中...');
+  aiDiv.classList.add('qa-thinking');
+
   // 準備 context（逐字稿截斷到合理長度）
   const context = transcript.map(s => `[${formatTime(s.start)}] ${s.text}`).join('\n');
   const trimmedContext = context.length > 12000 ? context.substring(0, 12000) + '\n...(截斷)' : context;
@@ -390,11 +396,13 @@ async function askQuestion() {
 
   try {
     const answer = await callLLMMessages(provider, apiKey, model, baseUrl, messages);
-    appendQA('assistant', answer);
+    aiDiv.textContent = answer;
+    aiDiv.classList.remove('qa-thinking');
     qaHistory.push({ role: 'user', content: question });
     qaHistory.push({ role: 'assistant', content: answer });
   } catch (err) {
-    appendQA('assistant', '❌ ' + err.message);
+    aiDiv.textContent = '❌ ' + err.message;
+    aiDiv.classList.remove('qa-thinking');
   } finally {
     $('btn-ask').disabled = false;
   }
@@ -406,6 +414,7 @@ function appendQA(role, text) {
   div.textContent = text;
   $('qa-messages').appendChild(div);
   $('qa-messages').scrollTop = $('qa-messages').scrollHeight;
+  return div;
 }
 
 async function callLLMMessages(provider, apiKey, model, baseUrl, messages) {
