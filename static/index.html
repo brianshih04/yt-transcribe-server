@@ -612,29 +612,88 @@ $('btn-play').addEventListener('click', () => {
   // 清除 markdown 符號
   const clean = text.replace(/[#*_>`]/g, '').replace(/\n{2,}/g, '\n\n');
 
+  // iOS Safari 限制：單次 utterance ~15 秒會被截斷，分段播放
+  const chunks = splitForSpeech(clean, 200);
+
   // iOS 修復：先 cancel 再 speak
   speechSynthesis.cancel();
 
-  // 短延遲確保 cancel 完成（iOS 需要）
   setTimeout(() => {
-    utter = new SpeechSynthesisUtterance(clean);
-    utter.lang = 'zh-TW';
-    utter.rate = 1.0;
-    utter.pitch = 1.0;
-    utter.volume = 1.0;
-
-    // 嘗試找中文語音
-    const voices = speechSynthesis.getVoices();
-    const zh = voices.find(v => v.lang.startsWith('zh-TW'))
-      || voices.find(v => v.lang.startsWith('zh'));
-    if (zh) utter.voice = zh;
-
-    utter.onend = stopPlay;
-    utter.onerror = stopPlay;
-    speechSynthesis.speak(utter);
-    playing = true;
-    $('btn-play').textContent = '⏸ 停止';
+    playChunks(chunks, 0);
   }, 150);
+});
+
+function splitForSpeech(text, maxLen) {
+  // 先按換行切，再按句號切，盡量在自然斷點分段
+  const allLines = [];
+  for (const para of text.split('\n')) {
+    if (!para.trim()) { allLines.push(''); continue; }
+    // 按句號、問號、驚嘆號切
+    const sentences = para.split(/(?<=[。！？\.\!\?])\s*/);
+    for (const s of sentences) {
+      if (s.length > maxLen) {
+        // 超長句再按逗號切
+        const parts = s.split(/(?<=[，,；;])\s*/);
+        let cur = '';
+        for (const p of parts) {
+          if ((cur + p).length > maxLen) {
+            if (cur) allLines.push(cur);
+            cur = p;
+          } else {
+            cur += p;
+          }
+        }
+        if (cur) allLines.push(cur);
+      } else {
+        allLines.push(s);
+      }
+    }
+  }
+
+  // 合併成每段約 maxLen 字
+  const chunks = [];
+  let cur = '';
+  for (const line of allLines) {
+    if ((cur + ' ' + line).length > maxLen) {
+      if (cur) chunks.push(cur.trim());
+      cur = line;
+    } else {
+      cur += (cur ? ' ' : '') + line;
+    }
+  }
+  if (cur.trim()) chunks.push(cur.trim());
+  return chunks.length > 0 ? chunks : [text];
+}
+
+let currentChunks = [];
+let currentChunkIdx = 0;
+
+function playChunks(chunks, idx) {
+  if (idx >= chunks.length) {
+    stopPlay();
+    return;
+  }
+  currentChunks = chunks;
+  currentChunkIdx = idx;
+
+  const u = new SpeechSynthesisUtterance(chunks[idx]);
+  u.lang = 'zh-TW';
+  u.rate = 1.0;
+  u.pitch = 1.0;
+  u.volume = 1.0;
+
+  const voices = speechSynthesis.getVoices();
+  const zh = voices.find(v => v.lang.startsWith('zh-TW'))
+    || voices.find(v => v.lang.startsWith('zh'));
+  if (zh) u.voice = zh;
+
+  u.onend = () => playChunks(chunks, idx + 1);
+  u.onerror = () => playChunks(chunks, idx + 1);
+
+  // iOS Bug 修復：每段之間 cancel + 延遲
+  speechSynthesis.cancel();
+  setTimeout(() => speechSynthesis.speak(u), 50);
+}
 });
 
 function stopPlay() {
