@@ -123,6 +123,7 @@
     }
     .settings-panel { display: none; }
     .settings-panel.open { display: block; }
+    #model-text { display: none; }
     label { font-size: 13px; color: var(--text-dim); display: block; margin-bottom: 4px; margin-top: 8px; }
     .progress-bar {
       width: 100%;
@@ -166,8 +167,9 @@
     </select>
     <label>API Key</label>
     <input type="text" id="apikey" placeholder="sk-..." />
-    <label>Model</label>
-    <input type="text" id="model" placeholder="deepseek-chat" />
+    <label>Model <span id="model-loading" style="display:none;font-size:11px;">載入中...</span></label>
+    <select id="model" style="display:none;"></select>
+    <input type="text" id="model-text" placeholder="deepseek-chat" />
     <label>Base URL（可選覆寫）</label>
     <input type="text" id="baseurl" placeholder="https://api.deepseek.com" />
     <label>ASR Server</label>
@@ -219,19 +221,117 @@ function loadSettings() {
   const s = JSON.parse(localStorage.getItem('yt-srt-settings') || '{}');
   $('provider').value = s.provider || 'deepseek';
   $('apikey').value = s.apiKey || '';
-  $('model').value = s.model || '';
-  $('baseurl').value = s.baseurl || '';
+  $('baseurl').value = s.baseUrl || '';
   $('asrurl').value = s.asrUrl || API;
+  // 儲存的 model 值等 fetchModels 後再選
+  savedModel = s.model || '';
 }
 function saveSettings() {
+  const modelVal = $('model').style.display !== 'none' ? $('model').value : $('model-text').value;
   localStorage.setItem('yt-srt-settings', JSON.stringify({
     provider: $('provider').value,
     apiKey: $('apikey').value,
-    model: $('model').value,
+    model: modelVal,
     baseUrl: $('baseurl').value,
     asrUrl: $('asrurl').value,
   }));
 }
+
+// ── 模型選擇 ────────────────────────────
+let savedModel = '';
+
+function getSelectedModel() {
+  const sel = $('model');
+  if (sel.style.display !== 'none' && sel.value) return sel.value;
+  return $('model-text').value || '';
+}
+
+async function fetchModels() {
+  const provider = $('provider').value;
+  const apiKey = $('apikey').value.trim();
+  if (!apiKey) {
+    showModelDropdown(null);
+    return;
+  }
+
+  // Gemini 沒有 list models API（需要不同的 endpoint），保留文字輸入
+  if (provider === 'gemini') {
+    showModelDropdown(null);
+    return;
+  }
+
+  const baseUrl = ($('baseurl').value.trim() || getDefaultBaseUrl(provider));
+
+  $('model-loading').style.display = 'inline';
+
+  try {
+    const resp = await fetch(`${baseUrl}/v1/models`, {
+      headers: { 'Authorization': `Bearer ${apiKey}` },
+    });
+    if (!resp.ok) {
+      showModelDropdown(null);
+      return;
+    }
+    const data = await resp.json();
+    let models = (data.data || data.models || []).map(m => m.id || m.name || '').filter(Boolean);
+    if (models.length === 0) {
+      showModelDropdown(null);
+      return;
+    }
+    // 排序：熱門的排前面
+    models.sort((a, b) => {
+      const priority = ['chat', 'flash', 'pro', '4o', 'mini', 'turbo'];
+      let sa = 99, sb = 99;
+      for (let i = 0; i < priority.length; i++) {
+        if (a.toLowerCase().includes(priority[i])) sa = Math.min(sa, i);
+        if (b.toLowerCase().includes(priority[i])) sb = Math.min(sb, i);
+      }
+      return sa - sb || a.localeCompare(b);
+    });
+    showModelDropdown(models);
+  } catch (e) {
+    showModelDropdown(null);
+  } finally {
+    $('model-loading').style.display = 'none';
+  }
+}
+
+function showModelDropdown(models) {
+  const sel = $('model');
+  const txt = $('model-text');
+  sel.innerHTML = '';
+
+  if (!models || models.length === 0) {
+    // fallback 文字輸入
+    sel.style.display = 'none';
+    txt.style.display = 'block';
+    txt.value = savedModel || getDefaultModel($('provider').value);
+    return;
+  }
+
+  // 填入 select
+  for (const m of models) {
+    const opt = document.createElement('option');
+    opt.value = m;
+    opt.textContent = m;
+    sel.appendChild(opt);
+  }
+  // 選擇儲存的 model 或預設
+  const defaultM = savedModel || getDefaultModel($('provider').value);
+  if (models.includes(defaultM)) {
+    sel.value = defaultM;
+  } else {
+    sel.value = models[0];
+  }
+  sel.style.display = 'block';
+  txt.style.display = 'none';
+}
+
+// 監聽 provider / apikey 變化
+$('provider').addEventListener('change', fetchModels);
+$('apikey').addEventListener('change', fetchModels);
+$('apikey').addEventListener('blur', fetchModels);
+$('baseurl').addEventListener('change', fetchModels);
 
 // ── 設定面板 ────────────────────────────
 $('settings-toggle').addEventListener('click', () => {
@@ -239,6 +339,10 @@ $('settings-toggle').addEventListener('click', () => {
 });
 $('settings-panel').addEventListener('change', saveSettings);
 $('settings-panel').addEventListener('input', saveSettings);
+
+// 載入設定後觸發模型載入
+loadSettings();
+fetchModels();
 
 // ── 抓字幕 ──────────────────────────────
 function extractVideoId(url) {
@@ -372,10 +476,8 @@ async function askQuestion() {
   if (!apiKey) { showError('請在設定中輸入 API Key'); $('settings-panel').classList.add('open'); return; }
 
   const provider = $('provider').value;
-  const model = $('model').value || getDefaultModel(provider);
+  const model = getSelectedModel();
   const baseUrl = $('baseurl').value.trim() || getDefaultBaseUrl(provider);
-
-  // 顯示問題
   appendQA('user', question);
   $('qa-input').value = '';
   $('btn-ask').disabled = true;
@@ -463,7 +565,7 @@ async function generateSummary() {
   $('summary-view').textContent = '生成中...';
 
   const provider = $('provider').value;
-  const model = $('model').value || getDefaultModel(provider);
+  const model = getSelectedModel();
   const baseUrl = $('baseurl').value.trim() || getDefaultBaseUrl(provider);
   const fullText = transcript.map(s => `[${formatTime(s.start)}] ${s.text}`).join('\n');
 
@@ -694,7 +796,6 @@ function playChunks(chunks, idx) {
   speechSynthesis.cancel();
   setTimeout(() => speechSynthesis.speak(u), 50);
 }
-});
 
 function stopPlay() {
   playing = false;
@@ -737,9 +838,6 @@ function showError(msg) { $('error-box').innerHTML = `<div class="error">${msg}<
 $('url-input').addEventListener('keydown', e => {
   if (e.key === 'Enter') $('btn-fetch').click();
 });
-
-// 載入設定
-loadSettings();
 </script>
 </body>
 </html>
