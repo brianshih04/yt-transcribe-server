@@ -418,11 +418,15 @@ async def get_captions(video_id: str, lang: str = "") -> str:
 @mcp_server.tool()
 async def transcribe_audio(url: str) -> str:
     """用 MOSS-Transcribe 語音辨識取得影片逐字稿（適用無字幕的影片）。非同步操作，回傳 job_id。"""
+    video_id = extract_video_id(url)
+    if not video_id:
+        return "Error: 無法從 URL 取得 video_id，請提供完整的 YouTube URL"
+
     job_id = str(uuid.uuid4())[:12]
     with _job_lock:
         _jobs[job_id] = {"status": "processing", "progress": 0, "result": None, "message": "排隊中"}
 
-    thread = threading.Thread(target=_run_transcribe_job, args=(job_id, url, None), daemon=True)
+    thread = threading.Thread(target=_run_job, args=(job_id, url, video_id, None), daemon=True)
     thread.start()
     return json.dumps({"job_id": job_id, "message": "已提交語音辨識，用 get_job_status 查詢進度"})
 
