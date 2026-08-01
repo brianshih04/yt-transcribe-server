@@ -161,6 +161,7 @@
   <div class="settings-panel" id="settings-panel">
     <label>LLM Provider</label>
     <select id="provider">
+      <option value="zai">GLM (智譜)</option>
       <option value="deepseek">DeepSeek</option>
       <option value="openai">OpenAI</option>
       <option value="gemini">Gemini</option>
@@ -220,7 +221,7 @@ const $ = id => document.getElementById(id);
 // ── 載入/儲存設定 ────────────────────────
 function loadSettings() {
   const s = JSON.parse(localStorage.getItem('yt-srt-settings') || '{}');
-  $('provider').value = s.provider || 'deepseek';
+  $('provider').value = s.provider || 'zai';
   $('apikey').value = s.apiKey || '';
   $('baseurl').value = s.baseUrl || '';
   $('asrurl').value = s.asrUrl || API;
@@ -266,7 +267,8 @@ async function fetchModels() {
   $('model-loading').style.display = 'inline';
 
   try {
-    const resp = await fetch(`${baseUrl}/v1/models`, {
+    const modelsPath = provider === 'zai' ? '/models' : '/v1/models';
+    const resp = await fetch(`${baseUrl}${modelsPath}`, {
       headers: { 'Authorization': `Bearer ${apiKey}` },
     });
     if (!resp.ok) {
@@ -637,7 +639,8 @@ async function callLLMMessages(provider, apiKey, model, baseUrl, messages) {
     return text;
   }
 
-  const resp = await fetch(`${baseUrl}/v1/chat/completions`, {
+  const chatPath = provider === 'zai' ? '/chat/completions' : '/v1/chat/completions';
+  const resp = await fetch(`${baseUrl}${chatPath}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
     body: JSON.stringify({ model, messages, max_tokens: 16384 }),
@@ -724,11 +727,11 @@ function chunkText(text, maxLen) {
 }
 
 function getDefaultModel(provider) {
-  return { deepseek: 'deepseek-chat', openai: 'gpt-4o-mini', gemini: 'gemini-2.0-flash', custom: '' }[provider] || '';
+  return { zai: 'glm-5.2', deepseek: 'deepseek-chat', openai: 'gpt-4o-mini', gemini: 'gemini-2.0-flash', custom: '' }[provider] || '';
 }
 
 function getDefaultBaseUrl(provider) {
-  return { deepseek: 'https://api.deepseek.com', openai: 'https://api.openai.com', gemini: 'https://generativelanguage.googleapis.com', custom: '' }[provider] || '';
+  return { zai: 'https://api.z.ai/api/paas/v4', deepseek: 'https://api.deepseek.com', openai: 'https://api.openai.com', gemini: 'https://generativelanguage.googleapis.com', custom: '' }[provider] || '';
 }
 
 async function callLLM(provider, apiKey, model, baseUrl, prompt) {
@@ -748,8 +751,9 @@ async function callLLM(provider, apiKey, model, baseUrl, prompt) {
     return text;
   }
 
-  // OpenAI compatible (deepseek, openai, custom)
-  const resp = await fetch(`${baseUrl}/v1/chat/completions`, {
+  // OpenAI compatible (zai, deepseek, openai, custom)
+  const chatPath = provider === 'zai' ? '/chat/completions' : '/v1/chat/completions';
+  const resp = await fetch(`${baseUrl}${chatPath}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
     body: JSON.stringify({
