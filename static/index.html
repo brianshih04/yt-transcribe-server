@@ -155,6 +155,7 @@
   <div class="input-row">
     <input type="text" id="url-input" placeholder="貼上 YouTube URL..." />
     <button class="btn" id="btn-fetch">抓字幕</button>
+    <button class="btn" id="btn-auto" style="background:#ff6b6b;color:#fff;">⚡ 一鍵</button>
   </div>
   <div class="settings-toggle" id="settings-toggle">⚙ 設定</div>
   <div class="settings-panel" id="settings-panel">
@@ -343,6 +344,102 @@ $('settings-panel').addEventListener('input', saveSettings);
 // 載入設定後觸發模型載入
 loadSettings();
 fetchModels();
+
+// ── 一鍵模式：抓字幕 → AI 摘要 → 語音播報 ──
+$('btn-auto').addEventListener('click', async () => {
+  const url = $('url-input').value.trim();
+  if (!url) return;
+  const apiKey = $('apikey').value.trim();
+  if (!apiKey) { showError('請先在設定中輸入 API Key'); $('settings-panel').classList.add('open'); return; }
+
+  $('btn-auto').disabled = true;
+  $('btn-fetch').disabled = true;
+  $('error-box').innerHTML = '';
+
+  try {
+    // Step 1: 抓字幕
+    showStatus('1/3 抓字幕中...');
+    const data = await fetchTranscriptData(url);
+    if (!data || data.length === 0) {
+      throw new Error('抓不到字幕');
+    }
+    transcript = data;
+    renderTranscript();
+    $('result-area').style.display = 'block';
+    hideStatus();
+
+    // Step 2: AI 摘要
+    showStatus('2/3 AI 分析中...');
+    switchTab('summary');
+    $('summary-view').textContent = '生成中...';
+    const provider = $('provider').value;
+    const model = getSelectedModel();
+    const baseUrl = $('baseurl').value.trim() || getDefaultBaseUrl(provider);
+    const fullText = transcript.map(s => `[${formatTime(s.start)}] ${s.text}`).join('\n');
+    const chunks = chunkText(fullText, 2000);
+
+    const promptHeader = `以下是 YouTube 影片的逐字稿，請生成繁體中文摘要：
+
+1. 一句話總結
+2. 5 個重點（含近似時間戳）
+3. 章節分段（含時間範圍）
+
+`;
+
+    let summary;
+    if (chunks.length <= 1) {
+      summary = await callLLM(provider, apiKey, model, baseUrl, promptHeader + fullText);
+    } else {
+      const partials = [];
+      for (let i = 0; i < chunks.length; i++) {
+        const p = `這是影片逐字稿的第 ${i+1}/${chunks.length} 部分，請用繁體中文摘要這段的要點（含時間戳）：\n\n${chunks[i]}`;
+        partials.push(await callLLM(provider, apiKey, model, baseUrl, p));
+      }
+      const mergePrompt = `${promptHeader}以下是影片各段落的摘要，請彙整成完整的摘要：\n\n${partials.join('\n\n---\n\n')}`;
+      summary = await callLLM(provider, apiKey, model, baseUrl, mergePrompt);
+    }
+    $('summary-view').textContent = summary;
+    hideStatus();
+
+    // Step 3: 語音播報
+    showStatus('3/3 語音播報中...');
+    playSummary(summary);
+    hideStatus();
+
+  } catch (err) {
+    hideStatus();
+    showError('一鍵失敗：' + err.message);
+  } finally {
+    $('btn-auto').disabled = false;
+    $('btn-fetch').disabled = false;
+  }
+});
+
+async function fetchTranscriptData(url) {
+  const vid = extractVideoId(url);
+  if (!vid) throw new Error('無法解析 YouTube URL');
+
+  const asrUrl = $('asrurl').value || API;
+  const resp = await fetch(`${asrUrl}/captions/${vid}`, { method: 'POST' });
+  if (resp.ok) {
+    const data = await resp.json();
+    if (data.segments && data.segments.length > 0) return data.segments;
+  }
+  // ASR fallback
+  return await transcribeViaASR(url);
+}
+
+function playSummary(text) {
+  if (typeof speechSynthesis === 'undefined') return;
+  const clean = text.replace(/[#*_>`]/g, '').replace(/\n{2,}/g, '\n\n');
+  const chunks = splitForSpeech(clean, 200);
+  speechSynthesis.cancel();
+  setTimeout(() => {
+    playChunks(chunks, 0);
+    playing = true;
+    $('btn-play').textContent = '⏸ 停止';
+  }, 150);
+}
 
 // ── 抓字幕 ──────────────────────────────
 function extractVideoId(url) {
