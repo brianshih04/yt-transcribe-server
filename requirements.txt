@@ -2,3 +2,5 @@ fastapi
 uvicorn
 requests
 pydantic
+mcp==2.0.0
+mcp-types==2.0.0

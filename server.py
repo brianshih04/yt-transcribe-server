@@ -20,11 +20,13 @@ from pathlib import Path
 from typing import Optional
 
 import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from mcp.server.mcpserver import MCPServer
+import mcp.types as mcp_types
 
 # ── 配置 ──────────────────────────────────────────────
 
@@ -362,7 +364,105 @@ def extract_video_id(url: str) -> Optional[str]:
     return None
 
 
+# ── MCP Server ──────────────────────────────────────────
+
+mcp_server = MCPServer("youtube-transcribe")
+
+
+@mcp_server.tool()
+async def get_captions(video_id: str, lang: str = "") -> str:
+    """透過 YouTube Innertube API 取得影片字幕（逐字稿）。輸入 video_id 或完整 YouTube URL。"""
+    extracted = extract_video_id(video_id)
+    if extracted:
+        video_id = extracted
+
+    try:
+        resp = requests.post(
+            "https://www.youtube.com/youtubei/v1/player",
+            json={
+                "context": {"client": {"clientName": "IOS", "clientVersion": "20.10.4"}},
+                "videoId": video_id,
+            },
+            headers={"Content-Type": "application/json"},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return f"Error: Innertube HTTP {resp.status_code}"
+        data = resp.json()
+        tracks = (data.get("captions") or {}).get("playerCaptionsTracklistRenderer", {}).get("captionTracks", [])
+        if not tracks:
+            return "此影片沒有字幕軌"
+
+        target = tracks[0]
+        if lang:
+            for t in tracks:
+                if t.get("languageCode", "").startswith(lang):
+                    target = t
+                    break
+
+        base_url = target["baseUrl"].replace("\\u0026", "&")
+        for fmt in ["srv3", "json3", ""]:
+            url = f"{base_url}&fmt={fmt}" if fmt else base_url
+            r = requests.get(url, timeout=15)
+            if r.text.strip():
+                segments = _parse_timedtext(r.text, fmt)
+                if segments:
+                    text = "\n".join(f"[{s['start']:.0f}s] {s['text']}" for s in segments)
+                    return f"字幕軌: {target.get('languageCode')}\n共 {len(segments)} 段\n\n{text}"
+    except Exception as e:
+        return f"Error: {e}"
+
+    return "所有字幕格式都回空"
+
+
+@mcp_server.tool()
+async def transcribe_audio(url: str) -> str:
+    """用 MOSS-Transcribe 語音辨識取得影片逐字稿（適用無字幕的影片）。非同步操作，回傳 job_id。"""
+    job_id = str(uuid.uuid4())[:12]
+    with _job_lock:
+        _jobs[job_id] = {"status": "processing", "progress": 0, "result": None, "message": "排隊中"}
+
+    thread = threading.Thread(target=_run_transcribe_job, args=(job_id, url, None), daemon=True)
+    thread.start()
+    return json.dumps({"job_id": job_id, "message": "已提交語音辨識，用 get_job_status 查詢進度"})
+
+
+@mcp_server.tool()
+async def get_job_status(job_id: str) -> str:
+    """查詢 ASR 語音辨識工作的進度或結果。"""
+    with _job_lock:
+        job = _jobs.get(job_id)
+    if not job:
+        return "找不到此 job_id"
+    if job["status"] == "done" and job.get("result"):
+        segments = job["result"].get("segments", [])
+        text = "\n".join(f"[{s['start']:.0f}s] {s['text']}" for s in segments)
+        return f"完成！共 {len(segments)} 段\n\n{text}"
+    return json.dumps({"status": job["status"], "progress": job.get("progress", 0), "message": job.get("message", "")}, ensure_ascii=False)
+
+
 if __name__ == "__main__":
     import uvicorn
-    logger.info("Starting on port %d, MOSS at %s", PORT, MOSS_URL)
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    from contextlib import asynccontextmanager
+    from starlette.applications import Starlette
+    from starlette.routing import Mount
+
+    # 把 MCP streamable HTTP app 掛在 /mcp 路徑下
+    mcp_app = mcp_server.streamable_http_app()
+
+    # lifespan：啟動 MCP session manager
+    @asynccontextmanager
+    async def lifespan(app):
+        async with mcp_server.session_manager.run():
+            yield
+
+    combined = Starlette(
+        routes=[
+            Mount("/mcp", app=mcp_app),
+            Mount("/", app=app),
+        ],
+        lifespan=lifespan,
+    )
+
+    logger.info("Starting on port %d, MOSS at %s, MCP at /mcp", PORT, MOSS_URL)
+    uvicorn.run(combined, host="0.0.0.0", port=PORT)
