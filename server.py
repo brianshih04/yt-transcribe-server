@@ -445,10 +445,21 @@ if __name__ == "__main__":
     import uvicorn
     from contextlib import asynccontextmanager
     from starlette.applications import Starlette
-    from starlette.routing import Mount
+    from starlette.routing import Mount, Route
+    from starlette.responses import FileResponse as SFileResponse
 
-    # 把 MCP streamable HTTP app 掛在 /mcp 路徑下
-    mcp_app = mcp_server.streamable_http_app()
+    # MCP streamable HTTP app，路徑設為 /mcp
+    # 加入 allowed_hosts 讓 Cloudflare Tunnel 的 Host header 通過
+    from mcp.server.transport_security import TransportSecuritySettings
+    security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=["yt-transcribe.avision-gb10.org", "localhost", "127.0.0.1"],
+    )
+    mcp_app = mcp_server.streamable_http_app(
+        streamable_http_path="/mcp",
+        json_response=True,
+        transport_security=security,
+    )
 
     # lifespan：啟動 MCP session manager
     @asynccontextmanager
@@ -456,6 +467,7 @@ if __name__ == "__main__":
         async with mcp_server.session_manager.run():
             yield
 
+    # 把 FastAPI app 和 MCP app 合併
     combined = Starlette(
         routes=[
             Mount("/mcp", app=mcp_app),
@@ -464,5 +476,5 @@ if __name__ == "__main__":
         lifespan=lifespan,
     )
 
-    logger.info("Starting on port %d, MOSS at %s, MCP at /mcp", PORT, MOSS_URL)
+    logger.info("Starting on port %d, MOSS at %s, MCP at /mcp/mcp", PORT, MOSS_URL)
     uvicorn.run(combined, host="0.0.0.0", port=PORT)
